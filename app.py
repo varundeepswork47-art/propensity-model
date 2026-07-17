@@ -28,7 +28,7 @@ import segment_builder
 import feature_engineering
 
 st.set_page_config(page_title="Cross-Sell Propensity", layout="wide")
-st.title("Cross-Sell Propensity — Health / Non-Health")
+st.title("Propensity to Cross-Sell Model")
 
 
 @st.cache_resource
