@@ -24,7 +24,13 @@ from pathlib import Path
 # deployment platforms (including Streamlit Cloud, depending on repo
 # layout), the working directory at runtime isn't guaranteed to be the
 # repo root, which silently breaks a plain Path("models") lookup.
-MODEL_DIR = Path(__file__).resolve().parent / "models"
+#
+# Set to the repo root (same folder as app.py/config.py) since that's
+# where health_model.joblib / non_health_model.joblib were uploaded.
+# If you later move them into an actual "models/" subfolder on GitHub,
+# change the line below to:
+#   MODEL_DIR = Path(__file__).resolve().parent / "models"
+MODEL_DIR = Path(__file__).resolve().parent
 
 # Point this at wherever the labeled training extract actually lives.
 # Update this path any time you get a new monthly extract.
