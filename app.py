@@ -16,6 +16,8 @@ influence on top of the trained model, via SHAP contribution reweighting.
 Run with: streamlit run app.py
 """
 
+import logging
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -26,6 +28,9 @@ import config
 import data_loader
 import segment_builder
 import feature_engineering
+
+logger = logging.getLogger("propensity_app")
+logging.basicConfig(level=logging.INFO)
 
 st.set_page_config(page_title="Cross-Sell Propensity", layout="wide")
 st.title("Propensity to Cross-Sell Model")
@@ -108,8 +113,9 @@ except KeyError as e:
 st.write(f"Detected segments: {raw_df['segment'].value_counts().to_dict()}")
 
 # ---------------------------------------------------------------------------
-# Header check — warn upfront (not deep in a stack trace) if the uploaded
-# file is missing columns the models were trained on, per segment present.
+# Header check — logged to the backend console only (not shown in the UI)
+# so a missing/renamed column is visible to whoever's monitoring the app's
+# logs without surfacing noisy warnings to end users on every upload.
 # ---------------------------------------------------------------------------
 for segment in config.SEGMENTS:
     segment_df = raw_df[raw_df["segment"] == segment]
@@ -117,13 +123,10 @@ for segment in config.SEGMENTS:
         continue
     missing_cols = feature_engineering.missing_columns_report(segment_df, segment)
     if missing_cols:
-        st.warning(
-            f"Segment '{segment}': the uploaded file is missing these expected "
-            f"columns: {missing_cols}. They'll be treated as missing/empty for "
-            f"scoring (0 for numeric fields, blank/unknown for categorical "
-            f"fields) rather than blocking the run — but double-check these "
-            f"aren't just renamed headers, since a renamed header looks "
-            f"identical to a genuinely missing column to the app."
+        logger.warning(
+            f"Segment '{segment}': uploaded file is missing expected columns "
+            f"{missing_cols}. Treated as missing/empty for scoring (0 for "
+            f"numeric fields, blank/unknown for categorical fields)."
         )
 
 
