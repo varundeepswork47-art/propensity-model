@@ -1,0 +1,157 @@
+"""
+app.py
+------
+Streamlit dashboard — two-segment version (health / non_health).
+
+For an uploaded lead list, each row's CURRENT segment is auto-detected
+(via segment_builder), then routed to the matching trained model:
+  - a "health" row -> scored by the health_model (predicts cross-sell
+    INTO non-health)
+  - a "non_health" row -> scored by the non_health_model (predicts
+    cross-sell INTO health)
+
+Manual weight-adjustment sliders let a user scenario-test feature
+influence on top of the trained model, via SHAP contribution reweighting.
+
+Run with: streamlit run app.py
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import joblib
+import shap
+
+import config
+import data_loader
+import segment_builder
+import feature_engineering
+
+st.set_page_config(page_title="Cross-Sell Propensity", layout="wide")
+st.title("Cross-Sell Propensity — Health / Non-Health")
+
+
+@st.cache_resource
+def load_model(segment: str):
+    model_path = config.MODEL_DIR / f"{segment}_model.joblib"
+    if not model_path.exists():
+        return None
+    bundle = joblib.load(model_path)
+    return bundle["model"], bundle["feature_columns"], bundle["threshold"], bundle["category_maps"]
+
+
+models = {seg: load_model(seg) for seg in config.SEGMENTS}
+missing = [seg for seg, m in models.items() if m is None]
+if missing:
+    st.warning(f"No trained model found for: {missing}. Run train_model.py for each segment first.")
+    st.stop()
+
+# ---------------------------------------------------------------------------
+# Manual weight adjustment sliders (applied per segment's top features)
+# ---------------------------------------------------------------------------
+st.sidebar.markdown("### Adjust feature influence")
+st.sidebar.caption("1.0 = model's learned weight, as-is. Move away from 1.0 to test scenarios.")
+
+selected_segment_for_weights = st.sidebar.radio("Tune weights for", config.SEGMENTS)
+_, feature_columns_for_weights, _, _ = models[selected_segment_for_weights]
+
+# Segment-specific features are guaranteed to show first (these are what
+# actually differ between Health and Non-Health), then filled up to 10
+# total with common features. A plain [:10] slice would silently miss
+# segment-specific features entirely, since COMMON_FEATURES (15 fields)
+# is longer than 10 and always appears first in the column order.
+segment_specific_present = [
+    f for f in feature_columns_for_weights if f in config.SEGMENT_FEATURES[selected_segment_for_weights]
+]
+common_present = [f for f in feature_columns_for_weights if f not in segment_specific_present]
+adjustable_features = segment_specific_present + common_present[: max(0, 10 - len(segment_specific_present))]
+
+feature_weights = {
+    feat: st.sidebar.slider(feat, 0.0, 2.0, 1.0, 0.1, key=f"{selected_segment_for_weights}_{feat}")
+    for feat in adjustable_features
+}
+
+# ---------------------------------------------------------------------------
+# Lead input
+# ---------------------------------------------------------------------------
+uploaded_file = st.file_uploader("Upload lead list (CSV or Excel)", type=["csv", "xlsx", "xls"])
+if uploaded_file is None:
+    st.stop()
+
+raw_df = data_loader.read_any(uploaded_file, uploaded_file.name)
+raw_df = data_loader.convert_excel_dates(raw_df)
+raw_df = segment_builder.derive_segment(raw_df)
+
+st.write(f"Detected segments: {raw_df['segment'].value_counts().to_dict()}")
+
+
+def apply_manual_weights(model, X: pd.DataFrame, weights: dict) -> np.ndarray:
+    """Scenario-testing tool: reweights SHAP contributions, not a retrained model."""
+    explainer = shap.TreeExplainer(model)
+    shap_values = explainer.shap_values(X)
+    shap_df = pd.DataFrame(shap_values, columns=X.columns, index=X.index)
+    for feat, w in weights.items():
+        if feat in shap_df.columns:
+            shap_df[feat] = shap_df[feat] * w
+    adjusted_log_odds = explainer.expected_value + shap_df.sum(axis=1)
+    return 1 / (1 + np.exp(-adjusted_log_odds))
+
+
+# ---------------------------------------------------------------------------
+# Score each segment separately, then recombine
+# ---------------------------------------------------------------------------
+results = []
+for segment in config.SEGMENTS:
+    segment_df = raw_df[raw_df["segment"] == segment]
+    if segment_df.empty:
+        continue
+
+    model, feature_columns, threshold, category_maps = models[segment]
+
+    X, _, _, policy_status, _ = feature_engineering.build_feature_matrix(
+        segment_df, segment, category_maps=category_maps
+    )
+    X = X.reindex(columns=feature_columns, fill_value=0)
+    # NOTE: fill_value=0 is correct for missing numeric columns. If an entire
+    # categorical column is absent from a scoring batch (rare — would mean a
+    # column existed at training time but not in this data at all), this
+    # naive reindex isn't fully correct for it; category_maps above already
+    # handles the far more common case of unseen VALUES within a present column.
+
+    base_proba = model.predict_proba(X)[:, 1]
+
+    weights_to_apply = feature_weights if segment == selected_segment_for_weights else None
+    if weights_to_apply:
+        try:
+            proba = apply_manual_weights(model, X, weights_to_apply)
+        except Exception as e:
+            st.warning(f"Manual weight adjustment unavailable for '{segment}' ({e}). Using base model output.")
+            proba = base_proba
+    else:
+        proba = base_proba
+
+    # Confidence discount for Inactive policies — the model was trained
+    # only on Active examples (see config.py note), so treat Inactive
+    # predictions as extrapolation, not a fully learned pattern.
+    if policy_status is not None:
+        confidence_multiplier = policy_status.map(
+            config.POLICY_STATUS_SCORING_CONFIDENCE_MULTIPLIER
+        ).fillna(1.0).values
+        proba = proba * confidence_multiplier
+
+    segment_result = segment_df.copy()
+    segment_result["cross_sell_probability"] = proba
+    segment_result["cross_sell_prediction"] = np.where(proba >= threshold, "Yes", "No")
+    results.append(segment_result)
+
+final_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+
+st.subheader("Results")
+st.dataframe(final_df)
+
+if not final_df.empty:
+    st.download_button(
+        "Download results as CSV",
+        final_df.to_csv(index=False).encode("utf-8"),
+        file_name="cross_sell_predictions.csv",
+    )
