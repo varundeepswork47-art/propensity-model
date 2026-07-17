@@ -37,20 +37,6 @@ DEFAULT_CUTOFF = 0.55  # default Yes/No probability cutoff, editable in the UI b
 st.set_page_config(page_title="Cross-Sell Propensity", layout="wide")
 st.title("Propensity to Cross-Sell Model")
 
-# ---------------------------------------------------------------------------
-# Yes/No cutoff — fixed probability threshold, editable right at the top of
-# the dashboard. Applies the same way to both segments: a lead is "Yes" if
-# its cross_sell_probability >= this value. This does NOT change the model
-# or its scores in any way — it only decides where the Yes/No line is drawn
-# on top of the probability the model already produced.
-# ---------------------------------------------------------------------------
-cutoff = st.number_input(
-    "Yes/No probability cutoff",
-    min_value=0.0, max_value=1.0, value=DEFAULT_CUTOFF, step=0.01, format="%.2f",
-    help="A lead is marked 'Yes' if its cross_sell_probability is at or above this value. "
-         "Doesn't retrain or change the model — only how scores get labeled.",
-)
-
 
 @st.cache_resource
 def load_model(segment: str):
@@ -78,6 +64,24 @@ if missing:
                  "and check for case-sensitivity (Linux is case-sensitive; "
                  "'Models' != 'models').")
     st.stop()
+
+# ---------------------------------------------------------------------------
+# Yes/No cutoff — fixed probability threshold, at the top of the sidebar.
+# Applies the same way to both segments: a lead is "Yes" if its
+# cross_sell_probability >= this value. This does NOT change the model or
+# its scores in any way — it only decides where the Yes/No line is drawn
+# on top of the probability the model already produced.
+# ---------------------------------------------------------------------------
+st.sidebar.markdown("### Yes/No probability cutoff")
+cutoff = st.sidebar.number_input(
+    "Cutoff",
+    min_value=0.0, max_value=1.0, value=DEFAULT_CUTOFF, step=0.01, format="%.2f",
+    help="A lead is marked 'Yes' if its cross_sell_probability is at or above this value. "
+         "Doesn't retrain or change the model — only how scores get labeled.",
+    label_visibility="collapsed",
+)
+
+st.sidebar.divider()
 
 # ---------------------------------------------------------------------------
 # Manual weight adjustment sliders (applied per segment's top features)
