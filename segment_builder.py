@@ -2,57 +2,62 @@
 segment_builder.py
 --------------------
 Derives which segment (health / non_health) each row currently belongs to,
-by reading the existing "Segemnt" business column directly (e.g. values
-like "Health - High Intent 260526" / "Non Health - High Intent 260526")
-rather than inferring it from product codes.
+based on the "PRODUCT_CODE" column: a row is "health" if its product code
+is in config.HEALTH_PRODUCT_CODES, and "non_health" for every other code —
+including codes not on the list at all, per the business rule that
+Non-Health is "everything else".
 
-Matching is done on normalized text (lowercased, punctuation stripped) so
-it's resilient to the trailing campaign-date suffix changing every month,
-and to minor spacing/casing differences (e.g. "Non-Health", "NON HEALTH").
-"Non Health" is checked BEFORE "Health" since "health" is a substring of
-"non health".
+Matching is done on a normalized string form of the code (stripped
+whitespace, trailing ".0" removed) so it doesn't matter whether the code
+arrives as an int (2824), a string ("2824"), or a float-like string
+("2824.0", which pandas produces when a numeric column has any NaNs and
+gets read as float64).
 """
 
-import re
 import numpy as np
 import pandas as pd
 import config
 
 
-def _normalize(text: str) -> str:
-    return re.sub(r"[^a-z]+", " ", str(text).lower()).strip()
+def _normalize_code(value) -> str:
+    """Normalizes a single product code value to a plain string for comparison."""
+    if pd.isna(value):
+        return ""
+    text = str(value).strip()
+    if text.endswith(".0"):
+        text = text[:-2]
+    return text
 
 
 def derive_segment(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    if config.SEGMENT_COLUMN_RAW not in df.columns:
-        candidates = [c for c in df.columns if "segment" in c.lower() or "segemnt" in c.lower()]
+    if config.PRODUCT_CODE_COLUMN not in df.columns:
+        candidates = [c for c in df.columns if "product" in c.lower() or "code" in c.lower()]
         raise KeyError(
-            f"Expected segment column '{config.SEGMENT_COLUMN_RAW}' not found. "
+            f"Expected product code column '{config.PRODUCT_CODE_COLUMN}' not found. "
             f"Closest matches in this file: {candidates or 'none found'}. "
-            f"Update config.SEGMENT_COLUMN_RAW to match the real column name."
+            f"Update config.PRODUCT_CODE_COLUMN to match the real column name."
         )
 
-    normalized = df[config.SEGMENT_COLUMN_RAW].apply(_normalize)
+    normalized = df[config.PRODUCT_CODE_COLUMN].apply(_normalize_code)
+    health_codes = set(config.HEALTH_PRODUCT_CODES)
 
-    is_non_health = normalized.str.contains(r"non\s*health", regex=True)
-    is_health = normalized.str.contains(r"health", regex=True) & ~is_non_health
+    is_health = normalized.isin(health_codes)
+    df["segment"] = np.where(is_health, "health", "non_health")
 
-    df["segment"] = np.select([is_non_health, is_health], ["non_health", "health"], default="unknown")
-
-    unknown_count = (df["segment"] == "unknown").sum()
-    if unknown_count:
-        sample_values = df.loc[df["segment"] == "unknown", config.SEGMENT_COLUMN_RAW].unique()[:5]
-        print(f"[segment_builder] WARNING: {unknown_count} rows had an unrecognized segment value. "
-              f"Sample unrecognized values: {list(sample_values)}. These rows will be excluded "
-              f"from training/scoring — review and extend the matching logic if this count is large.")
+    missing_count = (normalized == "").sum()
+    if missing_count:
+        print(f"[segment_builder] WARNING: {missing_count} rows had a missing/blank "
+              f"'{config.PRODUCT_CODE_COLUMN}' value. These default to 'non_health' under "
+              f"the current 'everything else is non_health' rule — review if this count "
+              f"is large, since a missing code isn't the same as a confirmed non-health code.")
 
     return df
 
 
 def split_by_segment(df: pd.DataFrame) -> dict:
-    """Returns {'health': df_health, 'non_health': df_non_health}. Drops 'unknown' rows."""
+    """Returns {'health': df_health, 'non_health': df_non_health}."""
     df = derive_segment(df)
     return {seg: df[df["segment"] == seg].copy() for seg in config.SEGMENTS}
 

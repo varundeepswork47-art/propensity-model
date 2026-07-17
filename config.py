@@ -10,8 +10,8 @@ Model design: TWO models, not three.
   - "non_health" : trained on customers currently holding Non-Health ->
                     predicts propensity to cross-sell into Health.
 
-Segments are derived (not hard-coded) from PRODUCT_CODE / SubChannel so the
-logic still works once the full 1.4 crore file is loaded.
+Segments are derived from PRODUCT_CODE: a fixed list of codes counts as
+"health", everything else is "non_health". See HEALTH_PRODUCT_CODES below.
 """
 
 from pathlib import Path
@@ -51,10 +51,8 @@ DROP_COLUMNS = [
     "Source.Name", "event_name", "CAMPAIGN_NAME", "event_time",
     "Registration_NO", "MODEL_NO", "NRMR_Code",
     "KYC_DOB", "YearsAge",          # 90%+ missing in sample — too sparse to trust
-    # NOTE: "Segemnt" is deliberately NOT dropped here — it's the column
-    # segment_builder.py uses to route each row to the right model. It's
-    # dropped automatically later (after segmenting) since it isn't listed
-    # in COMMON_FEATURES or SEGMENT_FEATURES.
+    "Segemnt",                      # no longer used for routing — segmentation now
+                                     # comes from PRODUCT_CODE (see HEALTH_PRODUCT_CODES)
 ]
 
 TARGET_COLUMN_RAW = "Mapping to Leads & Read User in June"
@@ -70,12 +68,16 @@ EXCEL_SERIAL_DATE_COLUMNS = ["RelationShip_start_Date", "POLICY_END_Date"]
 # ---------------------------------------------------------------------------
 # 4. SEGMENT DERIVATION
 # ---------------------------------------------------------------------------
-# Segment is read directly from the existing "Segemnt" column (values like
-# "Health - High Intent 260526" / "Non Health - High Intent 260526") rather
-# than inferred from product codes — more reliable since it's already
-# business-defined. See segment_builder.py for the exact matching logic
-# (handles the trailing campaign-date suffix and casing/spacing variants).
-SEGMENT_COLUMN_RAW = "Segemnt"
+# Segment is derived from PRODUCT_CODE — a row is "health" if its product
+# code is in HEALTH_PRODUCT_CODES, and "non_health" for every other code
+# (including codes not seen before). See segment_builder.py for the exact
+# matching logic (handles numeric/string/float-string variants like
+# 2824, "2824", "2824.0").
+PRODUCT_CODE_COLUMN = "PRODUCT_CODE"
+
+HEALTH_PRODUCT_CODES = [
+    "2824", "2825", "2835", "2849", "2851", "2868", "2876",
+]
 
 SEGMENTS = ["health", "non_health"]
 
