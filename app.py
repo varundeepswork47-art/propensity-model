@@ -43,7 +43,19 @@ def load_model(segment: str):
 models = {seg: load_model(seg) for seg in config.SEGMENTS}
 missing = [seg for seg, m in models.items() if m is None]
 if missing:
-    st.warning(f"No trained model found for: {missing}. Run train_model.py for each segment first.")
+    st.warning(f"No trained model found for: {missing}.")
+    st.markdown("**Diagnostic info** — check this against your repo:")
+    st.code(f"Looking in: {config.MODEL_DIR.resolve()}")
+    if config.MODEL_DIR.exists():
+        found_files = [f.name for f in config.MODEL_DIR.iterdir()]
+        st.code(f"Files actually found in that folder: {found_files if found_files else '(empty)'}")
+        expected = [f"{seg}_model.joblib" for seg in config.SEGMENTS]
+        st.code(f"Expected filenames: {expected}")
+    else:
+        st.code("This folder does not exist at all in the deployed app. "
+                 "Confirm 'models/' was committed and pushed to the repo, "
+                 "and check for case-sensitivity (Linux is case-sensitive; "
+                 "'Models' != 'models').")
     st.stop()
 
 # ---------------------------------------------------------------------------
