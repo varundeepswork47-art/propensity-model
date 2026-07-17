@@ -56,6 +56,18 @@ def select_features(df: pd.DataFrame, segment: str) -> pd.DataFrame:
     return df[keep_cols]
 
 
+def missing_columns_report(df: pd.DataFrame, segment: str) -> list:
+    """
+    Returns the list of expected feature columns (COMMON_FEATURES +
+    that segment's SEGMENT_FEATURES) that are absent from df — without
+    printing anything. Used by app.py to show an upfront, human-readable
+    warning about header mismatches before scoring runs, instead of
+    letting a missing/renamed column surface later as a cryptic error.
+    """
+    feature_cols = config.COMMON_FEATURES + config.SEGMENT_FEATURES[segment]
+    return [c for c in feature_cols if c not in df.columns]
+
+
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     numeric_cols = df.select_dtypes(include="number").columns
@@ -124,3 +136,36 @@ def build_feature_matrix(raw_df: pd.DataFrame, segment: str, snapshot_date: pd.T
         sample_weight = policy_status.map(config.POLICY_STATUS_TRAIN_WEIGHT).fillna(1.0)
 
     return X, y, sample_weight, policy_status, category_maps
+
+
+def align_to_model_columns(X: pd.DataFrame, feature_columns: list, category_maps: dict) -> pd.DataFrame:
+    """
+    Aligns a scoring-time feature matrix to the EXACT columns/order the
+    model was trained on — safely handling a column that's entirely
+    absent from the uploaded file (e.g. a renamed or dropped header):
+
+      - Missing NUMERIC column     -> filled with 0 (neutral/absent value).
+      - Missing CATEGORICAL column -> filled with NaN using the column's
+        trained category set (via pd.Categorical(..., categories=...)),
+        so XGBoost treats every row as "missing" for that feature — its
+        native handling for unknown/absent categorical data.
+
+    Previously, a naive `X.reindex(columns=feature_columns, fill_value=0)`
+    filled missing categorical columns with a raw integer 0, which doesn't
+    match the categorical dtype the model was trained on and crashes
+    XGBoost with a dtype-mismatch error. This avoids that by fixing the
+    dtype per-column instead of applying one fill value to everything.
+
+    Also drops any column not in feature_columns (e.g. leftover PII or
+    metadata that slipped through), and returns columns in the exact
+    trained order so the model sees a consistent feature layout.
+    """
+    X = X.copy()
+    for col in feature_columns:
+        if col in X.columns:
+            continue
+        if col in category_maps:
+            X[col] = pd.Categorical([None] * len(X), categories=category_maps[col])
+        else:
+            X[col] = 0
+    return X[feature_columns]
