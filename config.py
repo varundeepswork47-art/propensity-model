@@ -19,7 +19,12 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # 1. PATHS
 # ---------------------------------------------------------------------------
-MODEL_DIR = Path("models")
+# MODEL_DIR is anchored to THIS file's own location (not a relative path
+# dependent on the process's current working directory) — on some
+# deployment platforms (including Streamlit Cloud, depending on repo
+# layout), the working directory at runtime isn't guaranteed to be the
+# repo root, which silently breaks a plain Path("models") lookup.
+MODEL_DIR = Path(__file__).resolve().parent / "models"
 
 # Point this at wherever the labeled training extract actually lives.
 # Update this path any time you get a new monthly extract.
