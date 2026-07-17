@@ -32,8 +32,6 @@ import feature_engineering
 logger = logging.getLogger("propensity_app")
 logging.basicConfig(level=logging.INFO)
 
-DEFAULT_CUTOFF = 0.55  # default Yes/No probability cutoff, editable in the UI below
-
 st.set_page_config(page_title="Cross-Sell Propensity", layout="wide")
 st.title("Propensity to Cross-Sell Model")
 
@@ -66,20 +64,27 @@ if missing:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Yes/No cutoff — fixed probability threshold, at the top of the sidebar.
-# Applies the same way to both segments: a lead is "Yes" if its
-# cross_sell_probability >= this value. This does NOT change the model or
-# its scores in any way — it only decides where the Yes/No line is drawn
-# on top of the probability the model already produced.
+# Yes/No cutoff — one fixed probability threshold PER SEGMENT, at the top of
+# the sidebar. Each defaults to that segment's own trained top-10%-capacity
+# threshold (bundle["threshold"]), not a shared flat number — Health and
+# Non-Health have different score distributions, so their sensible cutoffs
+# differ too. Editing these does NOT change the model or its scores in any
+# way — it only decides where the Yes/No line is drawn on top of the
+# probability the model already produced.
 # ---------------------------------------------------------------------------
 st.sidebar.markdown("### Yes/No probability cutoff")
-cutoff = st.sidebar.number_input(
-    "Cutoff",
-    min_value=0.0, max_value=1.0, value=DEFAULT_CUTOFF, step=0.01, format="%.2f",
-    help="A lead is marked 'Yes' if its cross_sell_probability is at or above this value. "
-         "Doesn't retrain or change the model — only how scores get labeled.",
-    label_visibility="collapsed",
-)
+cutoffs = {}
+for segment in config.SEGMENTS:
+    trained_threshold = models[segment][2]
+    cutoffs[segment] = st.sidebar.number_input(
+        f"{segment} cutoff",
+        min_value=0.0, max_value=1.0, value=float(trained_threshold), step=0.01, format="%.2f",
+        help=f"A '{segment}' lead is marked 'Yes' if its cross_sell_probability is at or above "
+             f"this value. Defaults to this segment's own trained top-"
+             f"{config.TOP_K_PERCENT_CAPACITY*100:.0f}%-capacity threshold ({trained_threshold:.4f}). "
+             f"Doesn't retrain or change the model — only how scores get labeled.",
+        key=f"cutoff_{segment}",
+    )
 
 st.sidebar.divider()
 
@@ -203,14 +208,10 @@ for segment in config.SEGMENTS:
         ).fillna(1.0).values
         proba = proba * confidence_multiplier
 
-    # Pick the cutoff: the fixed probability cutoff set at the top of the
-    # dashboard (default 0.55), applied the same way to every segment.
-    active_threshold = cutoff
-    st.caption(
-        f"**{segment}**: Yes/No cutoff = {active_threshold:.2f} (fixed) "
-        f"— model's originally trained top-{config.TOP_K_PERCENT_CAPACITY*100:.0f}%-capacity "
-        f"threshold was {threshold:.4f}, shown here for reference only."
-    )
+    # Pick the cutoff: this segment's own fixed probability cutoff, set in
+    # the sidebar (defaults to that segment's trained top-K%-capacity value).
+    active_threshold = cutoffs[segment]
+    st.caption(f"**{segment}**: Yes/No cutoff = {active_threshold:.2f}")
 
     segment_result = segment_df.copy()
     segment_result["cross_sell_probability"] = proba
