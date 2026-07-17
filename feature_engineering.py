@@ -56,16 +56,29 @@ def select_features(df: pd.DataFrame, segment: str) -> pd.DataFrame:
     return df[keep_cols]
 
 
+DERIVED_FEATURE_NAMES = {
+    "tenure_days", "days_to_policy_expiry", "claim_history_present",
+    "vehicle_data_present", "travel_intent_present",
+}
+
+
 def missing_columns_report(df: pd.DataFrame, segment: str) -> list:
     """
-    Returns the list of expected feature columns (COMMON_FEATURES +
+    Returns the list of expected RAW feature columns (COMMON_FEATURES +
     that segment's SEGMENT_FEATURES) that are absent from df — without
-    printing anything. Used by app.py to show an upfront, human-readable
-    warning about header mismatches before scoring runs, instead of
-    letting a missing/renamed column surface later as a cryptic error.
+    printing anything.
+
+    Derived fields (DERIVED_FEATURE_NAMES) are excluded from this check:
+    they're computed by add_derived_fields() from other raw columns and
+    will never exist in a freshly-uploaded file before that step runs, so
+    flagging them as "missing" would be a false alarm every single time.
+    Their true availability depends on their source columns (e.g.
+    RelationShip_start_Date, Total_NO_Claim, MAKE), which are checked in
+    their own right wherever they appear in the feature lists.
     """
     feature_cols = config.COMMON_FEATURES + config.SEGMENT_FEATURES[segment]
-    return [c for c in feature_cols if c not in df.columns]
+    raw_expected = [c for c in feature_cols if c not in DERIVED_FEATURE_NAMES]
+    return [c for c in raw_expected if c not in df.columns]
 
 
 def handle_missing_values(df: pd.DataFrame) -> pd.DataFrame:
