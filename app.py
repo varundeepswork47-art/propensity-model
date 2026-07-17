@@ -92,9 +92,39 @@ if uploaded_file is None:
 
 raw_df = data_loader.read_any(uploaded_file, uploaded_file.name)
 raw_df = data_loader.convert_excel_dates(raw_df)
-raw_df = segment_builder.derive_segment(raw_df)
+
+try:
+    raw_df = segment_builder.derive_segment(raw_df)
+except KeyError as e:
+    st.error(
+        f"Couldn't detect segments in this file: {e}\n\n"
+        f"This usually means the uploaded sheet's header for the product "
+        f"code column doesn't exactly match what the app expects "
+        f"(`{config.PRODUCT_CODE_COLUMN}`) — check for renamed, retyped, "
+        f"or differently-cased column headers and re-upload."
+    )
+    st.stop()
 
 st.write(f"Detected segments: {raw_df['segment'].value_counts().to_dict()}")
+
+# ---------------------------------------------------------------------------
+# Header check — warn upfront (not deep in a stack trace) if the uploaded
+# file is missing columns the models were trained on, per segment present.
+# ---------------------------------------------------------------------------
+for segment in config.SEGMENTS:
+    segment_df = raw_df[raw_df["segment"] == segment]
+    if segment_df.empty:
+        continue
+    missing_cols = feature_engineering.missing_columns_report(segment_df, segment)
+    if missing_cols:
+        st.warning(
+            f"Segment '{segment}': the uploaded file is missing these expected "
+            f"columns: {missing_cols}. They'll be treated as missing/empty for "
+            f"scoring (0 for numeric fields, blank/unknown for categorical "
+            f"fields) rather than blocking the run — but double-check these "
+            f"aren't just renamed headers, since a renamed header looks "
+            f"identical to a genuinely missing column to the app."
+        )
 
 
 def apply_manual_weights(model, X: pd.DataFrame, weights: dict) -> np.ndarray:
@@ -123,12 +153,11 @@ for segment in config.SEGMENTS:
     X, _, _, policy_status, _ = feature_engineering.build_feature_matrix(
         segment_df, segment, category_maps=category_maps
     )
-    X = X.reindex(columns=feature_columns, fill_value=0)
-    # NOTE: fill_value=0 is correct for missing numeric columns. If an entire
-    # categorical column is absent from a scoring batch (rare — would mean a
-    # column existed at training time but not in this data at all), this
-    # naive reindex isn't fully correct for it; category_maps above already
-    # handles the far more common case of unseen VALUES within a present column.
+    X = feature_engineering.align_to_model_columns(X, feature_columns, category_maps)
+    # Missing NUMERIC columns are filled with 0. Missing CATEGORICAL columns
+    # (entirely absent from this upload) are filled as missing/NaN using the
+    # trained category set, so XGBoost treats them as "unknown" rather than
+    # crashing on a dtype mismatch — see feature_engineering.align_to_model_columns.
 
     base_proba = model.predict_proba(X)[:, 1]
 
