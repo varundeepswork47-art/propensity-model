@@ -32,8 +32,24 @@ import feature_engineering
 logger = logging.getLogger("propensity_app")
 logging.basicConfig(level=logging.INFO)
 
+DEFAULT_CUTOFF = 0.55  # default Yes/No probability cutoff, editable in the UI below
+
 st.set_page_config(page_title="Cross-Sell Propensity", layout="wide")
 st.title("Propensity to Cross-Sell Model")
+
+# ---------------------------------------------------------------------------
+# Yes/No cutoff — fixed probability threshold, editable right at the top of
+# the dashboard. Applies the same way to both segments: a lead is "Yes" if
+# its cross_sell_probability >= this value. This does NOT change the model
+# or its scores in any way — it only decides where the Yes/No line is drawn
+# on top of the probability the model already produced.
+# ---------------------------------------------------------------------------
+cutoff = st.number_input(
+    "Yes/No probability cutoff",
+    min_value=0.0, max_value=1.0, value=DEFAULT_CUTOFF, step=0.01, format="%.2f",
+    help="A lead is marked 'Yes' if its cross_sell_probability is at or above this value. "
+         "Doesn't retrain or change the model — only how scores get labeled.",
+)
 
 
 @st.cache_resource
@@ -183,9 +199,18 @@ for segment in config.SEGMENTS:
         ).fillna(1.0).values
         proba = proba * confidence_multiplier
 
+    # Pick the cutoff: the fixed probability cutoff set at the top of the
+    # dashboard (default 0.55), applied the same way to every segment.
+    active_threshold = cutoff
+    st.caption(
+        f"**{segment}**: Yes/No cutoff = {active_threshold:.2f} (fixed) "
+        f"— model's originally trained top-{config.TOP_K_PERCENT_CAPACITY*100:.0f}%-capacity "
+        f"threshold was {threshold:.4f}, shown here for reference only."
+    )
+
     segment_result = segment_df.copy()
     segment_result["cross_sell_probability"] = proba
-    segment_result["cross_sell_prediction"] = np.where(proba >= threshold, "Yes", "No")
+    segment_result["cross_sell_prediction"] = np.where(proba >= active_threshold, "Yes", "No")
     results.append(segment_result)
 
 final_df = pd.concat(results, ignore_index=True) if results else pd.DataFrame()
