@@ -12,10 +12,10 @@ For an uploaded lead list, each row's CURRENT segment is auto-detected
 
 Yes/No cutoffs are driven by TOP-K% CAPACITY, computed live off the
 probability distribution of the uploaded file — NOT a fixed number saved
-at training time. Health defaults to top 3%, Non-Health to top 1%
-(config.DASHBOARD_TOP_K_DEFAULT), with a toggle to switch either segment
-to 5/10/15/20% capacity and see the cutoff probability score update
-immediately.
+at training time. Health defaults to top 10%, Non-Health to top 6%
+(config.DASHBOARD_TOP_K_DEFAULT), with a free-form slider (any
+whole-percent value, e.g. 4% or 12%) to see the cutoff probability score
+update immediately.
 
 Scoring only runs when the user clicks "Run model" — uploading a file by
 itself does not trigger the (potentially expensive) prediction pass.
@@ -76,9 +76,10 @@ if missing:
 # ---------------------------------------------------------------------------
 # Yes/No cutoff — TOP-K% CAPACITY, per segment.
 #
-# Each segment has its own default (Health = top 3%, Non-Health = top 1%),
-# plus a toggle to widen the net to 5/10/15/20% for capacity what-ifs. This
-# is NOT a fixed number carried over from training — it's recomputed live,
+# Each segment has its own default (Health = top 10%, Non-Health = top 6%),
+# with a free-form slider to dial in ANY whole-percent value in between
+# (e.g. 4%, 12%) rather than fixed steps — for capacity what-ifs. This is
+# NOT a fixed number carried over from training — it's recomputed live,
 # below, off the probability distribution of whatever file gets uploaded
 # and scored, so it always reflects "top K% of THIS batch". The actual
 # cutoff probability score is shown once a file has been scored.
@@ -88,17 +89,17 @@ st.sidebar.markdown("### Yes/No cutoff — Top-K% capacity")
 top_k_selection = {}
 for segment in config.SEGMENTS:
     default_k = config.DASHBOARD_TOP_K_DEFAULT[segment]
-    options = [default_k] + [o for o in config.DASHBOARD_TOP_K_TOGGLE_OPTIONS if o != default_k]
-    top_k_selection[segment] = st.sidebar.radio(
+    top_k_selection[segment] = st.sidebar.slider(
         f"**{segment}** — flag top what % as 'Yes'?",
-        options=options,
-        index=0,
-        format_func=lambda x, seg=segment: f"Top {x}%" + ("  (default)" if x == config.DASHBOARD_TOP_K_DEFAULT[seg] else ""),
+        min_value=config.DASHBOARD_TOP_K_MIN,
+        max_value=config.DASHBOARD_TOP_K_MAX,
+        value=default_k,
+        step=1,
+        format="%d%%",
         key=f"topk_{segment}",
-        horizontal=True,
-        help=f"Defaults to top {default_k}% for '{segment}'. Switch to see the cutoff probability "
-             f"score and Yes/No split at 5/10/15/20% capacity instead. The underlying model scores "
-             f"don't change — only where the Yes/No line is drawn and how many leads cross it.",
+        help=f"Defaults to top {default_k}% for '{segment}'. Drag to any value to see the cutoff "
+             f"probability score and Yes/No split update live. The underlying model scores don't "
+             f"change — only where the Yes/No line is drawn and how many leads cross it.",
     )
 
 # Filled in further down, once a file has been scored — shows the live
