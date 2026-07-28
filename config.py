@@ -200,11 +200,13 @@ TOP_K_PERCENT_CAPACITY = 0.10
 # upload, and will differ from the training-time threshold too.
 #
 # Defaults reflect each segment's real working capacity for the sales team:
-# Health leads are worked more aggressively (top 3%), Non-Health more
-# selectively (top 1%). The toggle lets a user widen either segment out to
-# 5/10/15/20% for capacity what-ifs without touching the model itself.
+# Health = top 10%, Non-Health = top 6%. The dashboard exposes a free-form
+# slider (not fixed steps) so a user can dial in any whole-percent value
+# in [DASHBOARD_TOP_K_MIN, DASHBOARD_TOP_K_MAX] — e.g. 4% or 12% — for
+# capacity what-ifs, without touching the model itself.
 DASHBOARD_TOP_K_DEFAULT = {
-    "health": 3,
-    "non_health": 1,
+    "health": 10,
+    "non_health": 6,
 }
-DASHBOARD_TOP_K_TOGGLE_OPTIONS = [5, 10, 15, 20]
+DASHBOARD_TOP_K_MIN = 1
+DASHBOARD_TOP_K_MAX = 50
