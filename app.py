@@ -10,6 +10,16 @@ For an uploaded lead list, each row's CURRENT segment is auto-detected
   - a "non_health" row -> scored by the non_health_model (predicts
     cross-sell INTO health)
 
+Yes/No cutoffs are driven by TOP-K% CAPACITY, computed live off the
+probability distribution of the uploaded file — NOT a fixed number saved
+at training time. Health defaults to top 3%, Non-Health to top 1%
+(config.DASHBOARD_TOP_K_DEFAULT), with a toggle to switch either segment
+to 5/10/15/20% capacity and see the cutoff probability score update
+immediately.
+
+Scoring only runs when the user clicks "Run model" — uploading a file by
+itself does not trigger the (potentially expensive) prediction pass.
+
 Manual weight-adjustment sliders let a user scenario-test feature
 influence on top of the trained model, via SHAP contribution reweighting.
 
@@ -64,27 +74,36 @@ if missing:
     st.stop()
 
 # ---------------------------------------------------------------------------
-# Yes/No cutoff — one fixed probability threshold PER SEGMENT, at the top of
-# the sidebar. Each defaults to that segment's own trained top-10%-capacity
-# threshold (bundle["threshold"]), not a shared flat number — Health and
-# Non-Health have different score distributions, so their sensible cutoffs
-# differ too. Editing these does NOT change the model or its scores in any
-# way — it only decides where the Yes/No line is drawn on top of the
-# probability the model already produced.
+# Yes/No cutoff — TOP-K% CAPACITY, per segment.
+#
+# Each segment has its own default (Health = top 3%, Non-Health = top 1%),
+# plus a toggle to widen the net to 5/10/15/20% for capacity what-ifs. This
+# is NOT a fixed number carried over from training — it's recomputed live,
+# below, off the probability distribution of whatever file gets uploaded
+# and scored, so it always reflects "top K% of THIS batch". The actual
+# cutoff probability score is shown once a file has been scored.
 # ---------------------------------------------------------------------------
-st.sidebar.markdown("### Yes/No probability cutoff")
-cutoffs = {}
+st.sidebar.markdown("### Yes/No cutoff — Top-K% capacity")
+
+top_k_selection = {}
 for segment in config.SEGMENTS:
-    trained_threshold = models[segment][2]
-    cutoffs[segment] = st.sidebar.number_input(
-        f"{segment} cutoff",
-        min_value=0.0, max_value=1.0, value=float(trained_threshold), step=0.01, format="%.2f",
-        help=f"A '{segment}' lead is marked 'Yes' if its cross_sell_probability is at or above "
-             f"this value. Defaults to this segment's own trained top-"
-             f"{config.TOP_K_PERCENT_CAPACITY*100:.0f}%-capacity threshold ({trained_threshold:.4f}). "
-             f"Doesn't retrain or change the model — only how scores get labeled.",
-        key=f"cutoff_{segment}",
+    default_k = config.DASHBOARD_TOP_K_DEFAULT[segment]
+    options = [default_k] + [o for o in config.DASHBOARD_TOP_K_TOGGLE_OPTIONS if o != default_k]
+    top_k_selection[segment] = st.sidebar.radio(
+        f"**{segment}** — flag top what % as 'Yes'?",
+        options=options,
+        index=0,
+        format_func=lambda x, seg=segment: f"Top {x}%" + ("  (default)" if x == config.DASHBOARD_TOP_K_DEFAULT[seg] else ""),
+        key=f"topk_{segment}",
+        horizontal=True,
+        help=f"Defaults to top {default_k}% for '{segment}'. Switch to see the cutoff probability "
+             f"score and Yes/No split at 5/10/15/20% capacity instead. The underlying model scores "
+             f"don't change — only where the Yes/No line is drawn and how many leads cross it.",
     )
+
+# Filled in further down, once a file has been scored — shows the live
+# cutoff probability score for the currently selected Top-K% on THIS file.
+cutoff_score_placeholders = {segment: st.sidebar.empty() for segment in config.SEGMENTS}
 
 st.sidebar.divider()
 
@@ -99,9 +118,7 @@ _, feature_columns_for_weights, _, _ = models[selected_segment_for_weights]
 
 # Segment-specific features are guaranteed to show first (these are what
 # actually differ between Health and Non-Health), then filled up to 10
-# total with common features. A plain [:10] slice would silently miss
-# segment-specific features entirely, since COMMON_FEATURES (15 fields)
-# is longer than 10 and always appears first in the column order.
+# total with common features.
 segment_specific_present = [
     f for f in feature_columns_for_weights if f in config.SEGMENT_FEATURES[selected_segment_for_weights]
 ]
@@ -118,41 +135,85 @@ feature_weights = {
 # ---------------------------------------------------------------------------
 uploaded_file = st.file_uploader("Upload lead list (CSV or Excel)", type=["csv", "xlsx", "xls"])
 if uploaded_file is None:
+    st.session_state.pop("scored", None)
+    st.session_state.pop("file_signature", None)
     st.stop()
 
-raw_df = data_loader.read_any(uploaded_file, uploaded_file.name)
-raw_df = data_loader.convert_excel_dates(raw_df)
+# A brand-new file invalidates any previously scored results — forces a
+# fresh "Run model" click rather than silently showing stale predictions
+# from the last upload while a new one sits unscored underneath it.
+file_signature = (uploaded_file.name, uploaded_file.size)
+if st.session_state.get("file_signature") != file_signature:
+    st.session_state.pop("scored", None)
+    st.session_state["file_signature"] = file_signature
 
-try:
-    raw_df = segment_builder.derive_segment(raw_df)
-except KeyError as e:
-    st.error(
-        f"Couldn't detect segments in this file: {e}\n\n"
-        f"This usually means the uploaded sheet's header for the product "
-        f"code column doesn't exactly match what the app expects "
-        f"(`{config.PRODUCT_CODE_COLUMN}`) — check for renamed, retyped, "
-        f"or differently-cased column headers and re-upload."
-    )
+run_clicked = st.button("▶ Run model", type="primary")
+
+if run_clicked:
+    with st.spinner("Scoring leads..."):
+        raw_df = data_loader.read_any(uploaded_file, uploaded_file.name)
+        raw_df = data_loader.convert_excel_dates(raw_df)
+
+        try:
+            raw_df = segment_builder.derive_segment(raw_df)
+        except KeyError as e:
+            st.error(
+                f"Couldn't detect segments in this file: {e}\n\n"
+                f"This usually means the uploaded sheet's header for the product "
+                f"code column doesn't exactly match what the app expects "
+                f"(`{config.PRODUCT_CODE_COLUMN}`) — check for renamed, retyped, "
+                f"or differently-cased column headers and re-upload."
+            )
+            st.stop()
+
+        # Header check — logged to the backend console only, not shown in the
+        # UI, so a missing/renamed column is visible to whoever's monitoring
+        # the app's logs without surfacing noisy warnings on every upload.
+        for segment in config.SEGMENTS:
+            segment_df = raw_df[raw_df["segment"] == segment]
+            if segment_df.empty:
+                continue
+            missing_cols = feature_engineering.missing_columns_report(segment_df, segment)
+            if missing_cols:
+                logger.warning(
+                    f"Segment '{segment}': uploaded file is missing expected columns "
+                    f"{missing_cols}. Treated as missing/empty for scoring (0 for "
+                    f"numeric fields, blank/unknown for categorical fields)."
+                )
+
+        scored = {"segment_counts": raw_df["segment"].value_counts().to_dict()}
+        for segment in config.SEGMENTS:
+            segment_df = raw_df[raw_df["segment"] == segment]
+            if segment_df.empty:
+                continue
+
+            model, feature_columns, _, category_maps = models[segment]
+
+            X, _, _, policy_status, _ = feature_engineering.build_feature_matrix(
+                segment_df, segment, category_maps=category_maps
+            )
+            X = feature_engineering.align_to_model_columns(X, feature_columns, category_maps)
+            # Missing NUMERIC columns filled with 0. Missing CATEGORICAL
+            # columns filled as missing/NaN using the trained category set —
+            # see feature_engineering.align_to_model_columns.
+
+            base_proba = model.predict_proba(X)[:, 1]
+
+            scored[segment] = {
+                "segment_df": segment_df,
+                "X": X,
+                "base_proba": base_proba,
+                "policy_status": policy_status,
+            }
+
+        st.session_state["scored"] = scored
+
+if "scored" not in st.session_state:
+    st.info("File uploaded. Click **▶ Run model** above to score these leads.")
     st.stop()
 
-st.write(f"Detected segments: {raw_df['segment'].value_counts().to_dict()}")
-
-# ---------------------------------------------------------------------------
-# Header check — logged to the backend console only (not shown in the UI)
-# so a missing/renamed column is visible to whoever's monitoring the app's
-# logs without surfacing noisy warnings to end users on every upload.
-# ---------------------------------------------------------------------------
-for segment in config.SEGMENTS:
-    segment_df = raw_df[raw_df["segment"] == segment]
-    if segment_df.empty:
-        continue
-    missing_cols = feature_engineering.missing_columns_report(segment_df, segment)
-    if missing_cols:
-        logger.warning(
-            f"Segment '{segment}': uploaded file is missing expected columns "
-            f"{missing_cols}. Treated as missing/empty for scoring (0 for "
-            f"numeric fields, blank/unknown for categorical fields)."
-        )
+scored = st.session_state["scored"]
+st.write(f"Detected segments: {scored['segment_counts']}")
 
 
 def apply_manual_weights(model, X: pd.DataFrame, weights: dict) -> np.ndarray:
@@ -167,27 +228,38 @@ def apply_manual_weights(model, X: pd.DataFrame, weights: dict) -> np.ndarray:
     return 1 / (1 + np.exp(-adjusted_log_odds))
 
 
+def compute_topk_threshold(proba: np.ndarray, top_k_percent: float) -> float:
+    """
+    Probability cutoff such that roughly top_k_percent of THIS scored batch
+    lands 'Yes'. Mirrors train_model.select_threshold_for_top_k, but run
+    live against whatever file was just uploaded — since the right cutoff
+    score for "top K%" depends on that file's own score distribution, not
+    the training holdout's.
+    """
+    if len(proba) == 0:
+        return 0.0
+    cutoff_index = int(len(proba) * (top_k_percent / 100.0))
+    sorted_proba = np.sort(proba)[::-1]
+    idx = min(cutoff_index, len(sorted_proba) - 1)
+    return float(sorted_proba[idx])
+
+
 # ---------------------------------------------------------------------------
-# Score each segment separately, then recombine
+# Apply weights + Inactive-policy confidence discount, then the live
+# Top-K% cutoff, per segment. Cheap enough to redo on every rerun (e.g. the
+# user flips a Top-K% toggle or a weight slider) using the cached
+# base_proba/X from the last "Run model" click — no need to re-score.
 # ---------------------------------------------------------------------------
 results = []
 for segment in config.SEGMENTS:
-    segment_df = raw_df[raw_df["segment"] == segment]
-    if segment_df.empty:
+    if segment not in scored:
         continue
 
-    model, feature_columns, threshold, category_maps = models[segment]
-
-    X, _, _, policy_status, _ = feature_engineering.build_feature_matrix(
-        segment_df, segment, category_maps=category_maps
-    )
-    X = feature_engineering.align_to_model_columns(X, feature_columns, category_maps)
-    # Missing NUMERIC columns are filled with 0. Missing CATEGORICAL columns
-    # (entirely absent from this upload) are filled as missing/NaN using the
-    # trained category set, so XGBoost treats them as "unknown" rather than
-    # crashing on a dtype mismatch — see feature_engineering.align_to_model_columns.
-
-    base_proba = model.predict_proba(X)[:, 1]
+    segment_df = scored[segment]["segment_df"]
+    X = scored[segment]["X"]
+    base_proba = scored[segment]["base_proba"]
+    policy_status = scored[segment]["policy_status"]
+    model, _, _, _ = models[segment]
 
     weights_to_apply = feature_weights if segment == selected_segment_for_weights else None
     if weights_to_apply:
@@ -208,10 +280,18 @@ for segment in config.SEGMENTS:
         ).fillna(1.0).values
         proba = proba * confidence_multiplier
 
-    # Pick the cutoff: this segment's own fixed probability cutoff, set in
-    # the sidebar (defaults to that segment's trained top-K%-capacity value).
-    active_threshold = cutoffs[segment]
-    st.caption(f"**{segment}**: Yes/No cutoff = {active_threshold:.2f}")
+    top_k = top_k_selection[segment]
+    active_threshold = compute_topk_threshold(proba, top_k)
+    n_flagged = int((proba >= active_threshold).sum())
+
+    cutoff_score_placeholders[segment].metric(
+        f"{segment} cutoff @ top {top_k}%",
+        f"{active_threshold:.4f}",
+    )
+    st.caption(
+        f"**{segment}**: top {top_k}% cutoff on this file = **{active_threshold:.4f}** "
+        f"→ {n_flagged} of {len(proba)} leads flagged 'Yes'."
+    )
 
     segment_result = segment_df.copy()
     segment_result["cross_sell_probability"] = proba
