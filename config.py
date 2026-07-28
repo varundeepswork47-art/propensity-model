@@ -188,3 +188,23 @@ CANDIDATE_XGB_OVERRIDES = [
 # Business capacity: what fraction of scored leads can the sales team
 # realistically work? Used to pick the Yes/No threshold post-training.
 TOP_K_PERCENT_CAPACITY = 0.10
+
+# ---------------------------------------------------------------------------
+# 8. DASHBOARD TOP-K% CUTOFF (scoring time — app.py only)
+# ---------------------------------------------------------------------------
+# This is DIFFERENT from TOP_K_PERCENT_CAPACITY above. TOP_K_PERCENT_CAPACITY
+# is baked into the saved model bundle at TRAINING time (against the training
+# holdout). DASHBOARD_TOP_K_DEFAULT drives the live cutoff shown in app.py,
+# recomputed fresh off whatever file the user just uploaded — so the actual
+# probability score behind "top 3%" will legitimately differ upload to
+# upload, and will differ from the training-time threshold too.
+#
+# Defaults reflect each segment's real working capacity for the sales team:
+# Health leads are worked more aggressively (top 3%), Non-Health more
+# selectively (top 1%). The toggle lets a user widen either segment out to
+# 5/10/15/20% for capacity what-ifs without touching the model itself.
+DASHBOARD_TOP_K_DEFAULT = {
+    "health": 3,
+    "non_health": 1,
+}
+DASHBOARD_TOP_K_TOGGLE_OPTIONS = [5, 10, 15, 20]
