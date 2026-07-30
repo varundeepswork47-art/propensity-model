@@ -37,6 +37,18 @@ def add_derived_fields(df: pd.DataFrame, snapshot_date: pd.Timestamp = SNAPSHOT_
     if "NameOfCountryVisiting" in df.columns:
         df["travel_intent_present"] = df["NameOfCountryVisiting"].notna().astype(int)
 
+    # Explicit web-aggregator flag, pulled out of SubChannel so it can be
+    # given its own feature_weight at training time (config.FEATURE_TRAINING_WEIGHTS)
+    # independent of every other SubChannel value. Matches case-insensitively
+    # on "web" / "aggregator" substrings — adjust the pattern once you confirm
+    # the exact category strings used in the real file (e.g. "Web Aggregator",
+    # "WEB_AGG", "Online Aggregator").
+    if "SubChannel" in df.columns:
+        sc = df["SubChannel"].astype(str).str.lower()
+        df["sub_channel_is_web_aggregator"] = (
+            sc.str.contains("web", na=False) | sc.str.contains("aggregat", na=False)
+        ).astype(int)
+
     return df
 
 
@@ -58,7 +70,7 @@ def select_features(df: pd.DataFrame, segment: str) -> pd.DataFrame:
 
 DERIVED_FEATURE_NAMES = {
     "tenure_days", "days_to_policy_expiry", "claim_history_present",
-    "vehicle_data_present", "travel_intent_present",
+    "vehicle_data_present", "travel_intent_present", "sub_channel_is_web_aggregator",
 }
 
 

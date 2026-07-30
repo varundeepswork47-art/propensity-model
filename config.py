@@ -6,9 +6,25 @@ feature lists — matched to the real sample_.csv structure.
 
 Model design: TWO models, not three.
   - "health"     : trained on customers currently holding Health -> predicts
-                    propensity to cross-sell into Non-Health (motor/travel/etc).
+                    propensity to convert into ANOTHER Health product
+                    (health -> health cross-sell).
   - "non_health" : trained on customers currently holding Non-Health ->
-                    predicts propensity to cross-sell into Health.
+                    predicts propensity to convert into a Health product
+                    (non_health -> health cross-sell).
+
+Both models use the SAME raw label column (TARGET_COLUMN_RAW) as-is, for
+both segments — there is no per-segment inversion of the label anywhere
+in the pipeline. This only works because the raw label already means
+"converted into a Health product" for both segments (per the source
+campaign mapping) — confirm that's still true if the label's source
+definition ever changes, since nothing in the code enforces it; the
+pipeline just trusts whatever the raw column already encodes.
+
+One thing worth a gut-check on the real data if you haven't already: does
+label=1 for a health-segment row ever fire on a customer just renewing
+the SAME product code they already hold? If so that's not really a
+cross-sell and would quietly inflate the health segment's positive rate.
+Worth a quick spot-check, not a blocker.
 
 Segments are derived from PRODUCT_CODE: a fixed list of codes counts as
 "health", everything else is "non_health". See HEALTH_PRODUCT_CODES below.

@@ -37,7 +37,6 @@ import config
 import data_loader
 import segment_builder
 import feature_engineering
-import target_builder
 
 
 def compute_scale_pos_weight(y: pd.Series) -> float:
@@ -178,16 +177,10 @@ def train_for_segment(segment: str):
 
     raw_df = data_loader.load_training_data()  # already renames the raw label -> config.TARGET_COLUMN
     raw_df = segment_builder.derive_segment(raw_df)
-    # NOTE: the corrected "health -> DIFFERENT health product" label
-    # (target_builder.py) needs a column recording what product a customer
-    # actually converted into, separate from PRODUCT_CODE. That column
-    # doesn't exist in the current 90k extract, so it's not possible to
-    # tell apart "bought a different Health product" / "bought Non-Health"
-    # / "renewed the same product" from a single binary convert flag —
-    # this is a data limitation, not something fixable in code. Using the
-    # raw label as-is (health -> Non-Health, non_health -> Health, per the
-    # original design) until that column becomes available; see
-    # target_builder.py's docstring for what to wire up when it does.
+    # Same raw label used as-is for both segments — see the model-design
+    # note at the top of config.py for why that's correct here (the raw
+    # column already means "converted into Health" for both health and
+    # non_health rows; no per-segment transformation needed or applied).
     segment_builder.report_segment_positive_counts(raw_df)
 
     segment_df = raw_df[raw_df["segment"] == segment].copy()
