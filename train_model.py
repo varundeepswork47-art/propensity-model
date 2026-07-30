@@ -37,6 +37,7 @@ import config
 import data_loader
 import segment_builder
 import feature_engineering
+import target_builder
 
 
 def compute_scale_pos_weight(y: pd.Series) -> float:
@@ -45,12 +46,23 @@ def compute_scale_pos_weight(y: pd.Series) -> float:
     return neg / max(pos, 1)
 
 
+def build_feature_weights(columns) -> np.ndarray:
+    """
+    Aligns config.FEATURE_TRAINING_WEIGHTS to X's actual column order.
+    Any column not listed defaults to 1.0 (xgboost's own default weight —
+    unweighted, sampled uniformly alongside every other feature).
+    """
+    weights = np.array([config.FEATURE_TRAINING_WEIGHTS.get(col, 1.0) for col in columns], dtype=float)
+    return weights
+
+
 def run_cross_validation(X: pd.DataFrame, y: pd.Series, sample_weight: pd.Series,
                           xgb_params: dict, n_repeats: int, label: str = "", verbose: bool = True):
     """Runs repeated stratified CV with a given hyperparameter set. Returns array of PR-AUC scores."""
     rskf = RepeatedStratifiedKFold(n_splits=config.N_CV_FOLDS, n_repeats=n_repeats,
                                     random_state=config.RANDOM_STATE)
     pr_auc_scores = []
+    feature_weights = build_feature_weights(X.columns)
 
     for train_idx, val_idx in rskf.split(X, y):
         X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
@@ -62,7 +74,8 @@ def run_cross_validation(X: pd.DataFrame, y: pd.Series, sample_weight: pd.Series
             scale_pos_weight=compute_scale_pos_weight(y_train),
             early_stopping_rounds=config.EARLY_STOPPING_ROUNDS,
         )
-        model.fit(X_train, y_train, sample_weight=w_train, eval_set=[(X_val, y_val)], verbose=False)
+        model.fit(X_train, y_train, sample_weight=w_train, eval_set=[(X_val, y_val)],
+                  feature_weights=feature_weights, verbose=False)
 
         y_val_proba = model.predict_proba(X_val)[:, 1]
         pr_auc_scores.append(average_precision_score(y_val, y_val_proba))
@@ -140,13 +153,15 @@ def train_final_model(X: pd.DataFrame, y: pd.Series, sample_weight: pd.Series,
     X_train, X_holdout = X.iloc[train_idx], X.iloc[holdout_idx]
     y_train, y_holdout = y.iloc[train_idx], y.iloc[holdout_idx]
     w_train = sample_weight.iloc[train_idx] if sample_weight is not None else None
+    feature_weights = build_feature_weights(X.columns)
 
     model = XGBClassifier(
         **xgb_params,
         scale_pos_weight=compute_scale_pos_weight(y_train),
         early_stopping_rounds=config.EARLY_STOPPING_ROUNDS,
     )
-    model.fit(X_train, y_train, sample_weight=w_train, eval_set=[(X_holdout, y_holdout)], verbose=False)
+    model.fit(X_train, y_train, sample_weight=w_train, eval_set=[(X_holdout, y_holdout)],
+              feature_weights=feature_weights, verbose=False)
 
     holdout_proba = model.predict_proba(X_holdout)[:, 1]
     threshold = select_threshold_for_top_k(y_holdout, holdout_proba, config.TOP_K_PERCENT_CAPACITY)
@@ -161,10 +176,21 @@ def train_final_model(X: pd.DataFrame, y: pd.Series, sample_weight: pd.Series,
 def train_for_segment(segment: str):
     print(f"\n{'='*70}\nTraining segment: {segment}\n{'='*70}")
 
-    raw_df = data_loader.load_training_data()
+    raw_df = data_loader.load_training_data()  # already renames the raw label -> config.TARGET_COLUMN
+    raw_df = segment_builder.derive_segment(raw_df)
+    # NOTE: the corrected "health -> DIFFERENT health product" label
+    # (target_builder.py) needs a column recording what product a customer
+    # actually converted into, separate from PRODUCT_CODE. That column
+    # doesn't exist in the current 90k extract, so it's not possible to
+    # tell apart "bought a different Health product" / "bought Non-Health"
+    # / "renewed the same product" from a single binary convert flag —
+    # this is a data limitation, not something fixable in code. Using the
+    # raw label as-is (health -> Non-Health, non_health -> Health, per the
+    # original design) until that column becomes available; see
+    # target_builder.py's docstring for what to wire up when it does.
     segment_builder.report_segment_positive_counts(raw_df)
 
-    segment_df = segment_builder.split_by_segment(raw_df)[segment]
+    segment_df = raw_df[raw_df["segment"] == segment].copy()
     X, y, sample_weight, _, category_maps = feature_engineering.build_feature_matrix(segment_df, segment)
 
     if y.sum() < 200:
@@ -192,7 +218,8 @@ def train_for_segment(segment: str):
     model_path = config.MODEL_DIR / f"{segment}_model.joblib"
     joblib.dump(
         {"model": model, "feature_columns": list(X.columns), "threshold": threshold,
-         "category_maps": category_maps, "selected_params_label": winner_info["label"]},
+         "category_maps": category_maps, "selected_params_label": winner_info["label"],
+         "feature_training_weights": dict(zip(X.columns, build_feature_weights(X.columns)))},
         model_path,
     )
     print(f"[train] Saved model to {model_path}")

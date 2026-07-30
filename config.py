@@ -100,6 +100,7 @@ COMMON_FEATURES = [
     "PolicyStatus",          # kept as a feature — see note in README on inactive coverage
     "tenure_days",            # derived from RelationShip_start_Date
     "days_to_policy_expiry",  # derived from POLICY_END_Date
+    "sub_channel_is_web_aggregator",  # derived flag pulled out of SubChannel, weighted separately below
 ]
 
 SEGMENT_FEATURES = {
@@ -188,6 +189,55 @@ CANDIDATE_XGB_OVERRIDES = [
 # Business capacity: what fraction of scored leads can the sales team
 # realistically work? Used to pick the Yes/No threshold post-training.
 TOP_K_PERCENT_CAPACITY = 0.10
+
+# ---------------------------------------------------------------------------
+# 7b. TRAINING-TIME FEATURE WEIGHTS
+# ---------------------------------------------------------------------------
+# XGBoost's `feature_weights` biases which columns get chosen during split
+# search (works together with colsample_bytree/bylevel, both <1.0 in
+# XGB_PARAMS, which is what makes this have any effect at all — a column
+# that's never sampled can never be picked, no matter its true predictive
+# power). This is NOT the same as scaling a column's values, which does
+# nothing in a tree model.
+#
+# The last trained health_model.joblib put ~59% of all split usage on
+# SUM_INSURED alone — that's a single-feature-dependent model, which is a
+# real risk for generalizing to the full campaign base if SUM_INSURED's
+# distribution there differs at all from the 90k training sample. Weights
+# below suppress it and boost days_to_policy_expiry / SubChannel /
+# sub_channel_is_web_aggregator. Any feature not listed here defaults to
+# a weight of 1.0 (xgboost's own default — unweighted, chosen uniformly
+# at random alongside every other feature during column subsampling).
+#
+# These are RELATIVE sampling weights, not percentages — "SUM_INSURED: 0.3"
+# means it's picked ~3x less often than a default (1.0) feature during
+# column subsampling, not "SUM_INSURED gets exactly 30% of importance."
+# The resulting importance split still depends on the data; retrain and
+# re-check model.feature_importances_ after changing these.
+FEATURE_TRAINING_WEIGHTS = {
+    "SUM_INSURED": 0.3,                    # was dominating splits (~59%) — suppressed, not removed
+    "days_to_policy_expiry": 2.5,
+    "SubChannel": 2.0,
+    "sub_channel_is_web_aggregator": 3.0,  # isolated web-aggregator signal, weighted highest
+}
+
+# ---------------------------------------------------------------------------
+# 7c. HEALTH -> HEALTH CROSS-SELL TARGET (corrected business rule)
+# ---------------------------------------------------------------------------
+# Business rule as of the latest correction:
+#   - non_health customers -> target = converted into a HEALTH product (unchanged)
+#   - health customers     -> target = converted into a DIFFERENT HEALTH
+#                             product (NOT into Non-Health, which is what
+#                             the model was predicting before)
+#
+# Building the health->health target requires knowing what product code a
+# customer actually converted into, separate from PRODUCT_CODE (their
+# EXISTING product). Set this to that column's real name in your raw file.
+# Left as None on purpose: guessing at a plausible-sounding column name
+# and silently training on it is worse than failing loudly, since a wrong
+# guess here produces a model that looks fine in CV but is trained on a
+# meaningless label. See target_builder.py.
+PURCHASED_PRODUCT_CODE_COLUMN = None  # e.g. "New_PRODUCT_CODE" / "Converted_Product_Code" — set me
 
 # ---------------------------------------------------------------------------
 # 8. DASHBOARD TOP-K% CUTOFF (scoring time — app.py only)
